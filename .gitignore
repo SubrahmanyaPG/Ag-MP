@@ -28,6 +28,9 @@ staticfiles/
 # Environment variables
 .env
 
+# Local text documents
+/texts/
+
 # IDEs
 .vscode/
 .idea/

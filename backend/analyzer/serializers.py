@@ -48,7 +48,7 @@ class CommentSerializer(serializers.ModelSerializer):
 
 class AnalysisJobSerializer(serializers.ModelSerializer):
     video = VideoSerializer(read_only=True)
-    username = serializers.CharField(source='user.username', read_only=True, default=None)
+    username = serializers.CharField(source='owner.username', read_only=True, default=None)
 
     class Meta:
         model = AnalysisJob
@@ -57,6 +57,10 @@ class AnalysisJobSerializer(serializers.ModelSerializer):
             'video',
             'username',
             'status',
+            'stage',
+            'progress_percent',
+            'fetched_count',
+            'total_estimate',
             'error_message',
             'created_at',
             'completed_at',
@@ -93,10 +97,16 @@ class AnalyzeVideoRequestSerializer(serializers.Serializer):
     )
     max_comments = serializers.IntegerField(
         required=False,
+        allow_null=True,
         default=100,
         min_value=10,
-        max_value=1000,
-        help_text="Max comments to fetch and analyze (default: 100)"
+        max_value=20000,
+        help_text="Max comments to fetch and analyze (default: 100, null for all up to hard cap)"
+    )
+    include_replies = serializers.BooleanField(
+        required=False,
+        default=False,
+        help_text="Include comment replies where available"
     )
 
     def validate_url(self, value):
@@ -108,6 +118,10 @@ class AnalyzeVideoRequestSerializer(serializers.Serializer):
 
 
 from django.contrib.auth.models import User
+from django.contrib.auth.password_validation import validate_password
+from django.core import exceptions
+from django.db.models import Q
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -117,16 +131,63 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, min_length=6)
+    email = serializers.EmailField(required=True)
+    password = serializers.CharField(write_only=True, style={'input_type': 'password'})
 
     class Meta:
         model = User
         fields = ['id', 'username', 'email', 'password']
 
+    def validate_username(self, value):
+        if not value or not value.strip():
+            raise serializers.ValidationError("Username cannot be empty.")
+        if User.objects.filter(username__iexact=value.strip()).exists():
+            raise serializers.ValidationError("A user with this username already exists.")
+        return value.strip()
+
+    def validate_email(self, value):
+        if not value or not value.strip():
+            raise serializers.ValidationError("Email address is required.")
+        normalized = value.strip().lower()
+        if User.objects.filter(email__iexact=normalized).exists():
+            raise serializers.ValidationError("A user with this email address already exists.")
+        return normalized
+
+    def validate(self, data):
+        password = data.get('password')
+        user_for_validation = User(
+            username=data.get('username'),
+            email=data.get('email')
+        )
+        try:
+            validate_password(password, user=user_for_validation)
+        except exceptions.ValidationError as e:
+            raise serializers.ValidationError({'password': list(e.messages)})
+        return data
+
     def create(self, validated_data):
         user = User.objects.create_user(
             username=validated_data['username'],
-            email=validated_data.get('email', ''),
+            email=validated_data['email'],
             password=validated_data['password']
         )
         return user
+
+
+class EmailOrUsernameTokenObtainPairSerializer(TokenObtainPairSerializer):
+    """
+    Allows user authentication via either username or email address.
+    """
+    def validate(self, attrs):
+        login_identifier = attrs.get(self.username_field)
+        password = attrs.get('password')
+
+        if login_identifier:
+            login_identifier = login_identifier.strip()
+            user = User.objects.filter(
+                Q(username__iexact=login_identifier) | Q(email__iexact=login_identifier)
+            ).first()
+            if user and user.check_password(password):
+                attrs[self.username_field] = user.username
+
+        return super().validate(attrs)

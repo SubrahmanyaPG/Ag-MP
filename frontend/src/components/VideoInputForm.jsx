@@ -1,14 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Youtube, Search, Sparkles, AlertCircle, ArrowRight, CheckCircle2, 
-  Clipboard, X, History, TrendingUp, ShieldCheck, Cpu, Play, BarChart3
+  Clipboard, X, History, TrendingUp, ShieldCheck, Cpu, Play, BarChart3,
+  Layers, MessageSquare, Loader2
 } from 'lucide-react';
-import { getRecentReports } from '../services/api';
+import { getRecentReports, previewVideo } from '../services/api';
 import { useToast } from './Toast';
 
 export default function VideoInputForm({ onSubmit, isLoading, error, onSelectRecentReport }) {
   const [url, setUrl] = useState('');
   const [maxComments, setMaxComments] = useState(100);
+  const [includeReplies, setIncludeReplies] = useState(false);
+  const [previewData, setPreviewData] = useState(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
   const [detectedId, setDetectedId] = useState(null);
   const [recentReports, setRecentReports] = useState([]);
   const [loadingRecent, setLoadingRecent] = useState(false);
@@ -83,6 +87,27 @@ export default function VideoInputForm({ onSubmit, isLoading, error, onSelectRec
     return () => { isMounted = false; };
   }, []);
 
+  // Automatically preview video statistics when "All" is chosen
+  useEffect(() => {
+    let active = true;
+    if (maxComments === 'all' && (detectedId || url.trim())) {
+      setLoadingPreview(true);
+      previewVideo(url.trim())
+        .then((data) => {
+          if (active) setPreviewData(data);
+        })
+        .catch(() => {
+          if (active) setPreviewData(null);
+        })
+        .finally(() => {
+          if (active) setLoadingPreview(false);
+        });
+    } else {
+      setPreviewData(null);
+    }
+    return () => { active = false; };
+  }, [maxComments, url, detectedId]);
+
   const handlePaste = async () => {
     try {
       const text = await navigator.clipboard.readText();
@@ -98,17 +123,18 @@ export default function VideoInputForm({ onSubmit, isLoading, error, onSelectRec
   const handleClear = () => {
     setUrl('');
     setDetectedId(null);
+    setPreviewData(null);
   };
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!url.trim()) return;
-    onSubmit(url.trim(), maxComments);
+    onSubmit(url.trim(), maxComments, includeReplies);
   };
 
   const handleQuickPreset = (presetUrl) => {
     setUrl(presetUrl);
-    onSubmit(presetUrl, maxComments);
+    onSubmit(presetUrl, maxComments, includeReplies);
   };
 
   return (
@@ -207,29 +233,73 @@ export default function VideoInputForm({ onSubmit, isLoading, error, onSelectRec
               </div>
             )}
 
-            {/* Controls Bar: Sample Size & Presets */}
-            <div className="flex flex-wrap items-center justify-between gap-4 pt-4 border-t border-slate-800/80 text-xs">
-              <div className="flex items-center gap-2.5">
-                <span className="font-semibold text-slate-400">Sample Depth:</span>
-                {[50, 100, 200, 500].map((size) => (
-                  <button
-                    key={size}
-                    type="button"
-                    onClick={() => setMaxComments(size)}
-                    className={`px-3 py-1.5 rounded-xl font-bold transition-all text-xs ${
-                      maxComments === size
-                        ? 'bg-rose-500 text-white shadow-md shadow-rose-950/40 border border-rose-400/50'
-                        : 'bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800'
-                    }`}
-                  >
-                    {size} Comments
-                  </button>
-                ))}
+            {/* Controls Bar: Depth Selector & Quota Preview */}
+            <div className="space-y-3 pt-4 border-t border-slate-800/80 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold text-slate-400">Sample Depth:</span>
+                  {[
+                    { label: '100', value: 100 },
+                    { label: '500', value: 500 },
+                    { label: '1,000', value: 1000 },
+                    { label: '5,000', value: 5000 },
+                    { label: 'All comments', value: 'all' },
+                  ].map((opt) => (
+                    <button
+                      key={opt.label}
+                      type="button"
+                      onClick={() => setMaxComments(opt.value)}
+                      className={`px-3 py-1.5 rounded-xl font-bold transition-all text-xs ${
+                        maxComments === opt.value
+                          ? 'bg-rose-500 text-white shadow-md shadow-rose-950/40 border border-rose-400/50'
+                          : 'bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Include Replies Toggle */}
+                <label className="flex items-center gap-2 cursor-pointer select-none text-slate-300 hover:text-white transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={includeReplies}
+                    onChange={(e) => setIncludeReplies(e.target.checked)}
+                    className="w-4 h-4 rounded bg-slate-950 border-slate-700 text-rose-500 focus:ring-rose-500/30"
+                  />
+                  <span className="text-[11px] font-medium flex items-center gap-1">
+                    <MessageSquare className="w-3 h-3 text-indigo-400" />
+                    Include replies
+                  </span>
+                </label>
               </div>
 
-              <div className="text-slate-500 text-[11px]">
-                Estimated runtime: <span className="text-slate-300 font-medium">{maxComments <= 100 ? '~2 to 4 sec' : '~6 to 9 sec'}</span>
-              </div>
+              {/* All Comments Quota Estimation Banner */}
+              {maxComments === 'all' && (
+                <div className="p-3 rounded-xl bg-indigo-950/40 border border-indigo-800/60 text-indigo-200 text-left text-xs flex items-center justify-between gap-3 animate-in fade-in">
+                  <div className="flex items-center gap-2.5">
+                    {loadingPreview ? (
+                      <Loader2 className="w-4 h-4 text-indigo-400 animate-spin shrink-0" />
+                    ) : (
+                      <BarChart3 className="w-4 h-4 text-indigo-400 shrink-0" />
+                    )}
+                    <div>
+                      {loadingPreview ? (
+                        <span>Checking video statistics and calculating quota usage...</span>
+                      ) : previewData ? (
+                        <span>
+                          Video has <strong className="text-white font-mono">~{previewData.comment_count?.toLocaleString()}</strong> total comments. Estimated API quota: <strong className="text-amber-400 font-mono">~{previewData.estimated_quota_units} units</strong> (~1 unit / 100 comments). Capped at <strong className="text-white font-mono">{previewData.hard_cap?.toLocaleString()}</strong> max.
+                        </span>
+                      ) : (
+                        <span>
+                          Full-depth mode will fetch all comments up to the safety ceiling (20,000 comments). Estimated quota: ~1 unit per 100 comments.
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </form>
 

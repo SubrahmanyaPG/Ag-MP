@@ -285,6 +285,10 @@ from analyzer.tasks import analyze_video_task
 
 class Phase3APITests(APITestCase):
     def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.user = User.objects.create_user(username='test_phase3_user', password='Password123!')
+        self.client.force_authenticate(user=self.user)
         self.video = Video.objects.create(
             youtube_video_id="dQw4w9WgXcQ",
             title="Never Gonna Give You Up",
@@ -326,6 +330,7 @@ class Phase3APITests(APITestCase):
     def test_job_status_endpoint(self):
         job = AnalysisJob.objects.create(
             video=self.video,
+            owner=self.user,
             status=AnalysisJob.STATUS_RUNNING
         )
         response = self.client.get(f'/api/jobs/{job.id}/status/')
@@ -336,6 +341,7 @@ class Phase3APITests(APITestCase):
     def test_end_to_end_analysis_task(self):
         job = AnalysisJob.objects.create(
             video=self.video,
+            owner=self.user,
             status=AnalysisJob.STATUS_PENDING
         )
         # Execute Celery task directly
@@ -362,6 +368,7 @@ class Phase3APITests(APITestCase):
     def test_get_report_endpoint(self):
         job = AnalysisJob.objects.create(
             video=self.video,
+            owner=self.user,
             status=AnalysisJob.STATUS_DONE
         )
         report = Report.objects.create(
@@ -379,6 +386,7 @@ class Phase3APITests(APITestCase):
     def test_get_recent_reports(self):
         job = AnalysisJob.objects.create(
             video=self.video,
+            owner=self.user,
             status=AnalysisJob.STATUS_DONE
         )
         Report.objects.create(
@@ -394,6 +402,12 @@ class Phase3APITests(APITestCase):
         self.assertEqual(response.data[0]['video']['youtube_video_id'], self.video.youtube_video_id)
 
     def test_get_video_comments_with_filters(self):
+        # User needs to own at least one job for this video
+        AnalysisJob.objects.create(
+            video=self.video,
+            owner=self.user,
+            status=AnalysisJob.STATUS_DONE
+        )
         # Annotate
         self.comment1.sentiment_label = 'positive'
         self.comment1.is_spam = False
@@ -417,6 +431,7 @@ class Phase3APITests(APITestCase):
     def test_export_report_csv(self):
         job = AnalysisJob.objects.create(
             video=self.video,
+            owner=self.user,
             status=AnalysisJob.STATUS_DONE
         )
         Report.objects.create(
@@ -514,11 +529,14 @@ class Phase4LLMTests(TestCase):
 from django.urls import reverse
 from rest_framework.test import APIClient
 from django.contrib.auth.models import User
+from rest_framework_simplejwt.tokens import RefreshToken
 
 
 class PdfExportTests(TestCase):
     def setUp(self):
         self.client = APIClient()
+        self.user = User.objects.create_user(username='test_pdf_user', password='Password123!')
+        self.client.force_authenticate(user=self.user)
         self.video = Video.objects.create(
             youtube_video_id="pdf_vid_99",
             title="Building NLP Dashboards with React and Django",
@@ -526,6 +544,7 @@ class PdfExportTests(TestCase):
         )
         self.job = AnalysisJob.objects.create(
             video=self.video,
+            owner=self.user,
             status=AnalysisJob.STATUS_DONE
         )
         self.report = Report.objects.create(
@@ -614,6 +633,57 @@ class AuthenticationAndUserTests(TestCase):
         response = self.client.get(me_url)
         self.assertEqual(response.status_code, 401)
 
+    def test_login_with_email_instead_of_username(self):
+        User.objects.create_user(username='emailuser', email='myemail@domain.com', password='StrongPassword123!')
+        url = reverse('token-obtain-pair')
+        # Login using email in the username field
+        response = self.client.post(url, {'username': 'myemail@domain.com', 'password': 'StrongPassword123!'}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('access', response.data)
+
+    def test_registration_weak_password_fails(self):
+        url = reverse('auth-register')
+        payload = {
+            'username': 'weakpassuser',
+            'email': 'weak@example.com',
+            'password': '123'
+        }
+        response = self.client.post(url, payload, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('password', response.data)
+
+    def test_registration_duplicate_email_case_insensitive_fails(self):
+        User.objects.create_user(username='userone', email='unique@example.com', password='Password123!')
+        url = reverse('auth-register')
+        payload = {
+            'username': 'usertwo',
+            'email': 'UNIQUE@example.com',
+            'password': 'StrongPassword123!'
+        }
+        response = self.client.post(url, payload, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('email', response.data)
+
+    def test_logout_blacklists_refresh_token(self):
+        user = User.objects.create_user(username='logoutuser', email='logout@example.com', password='Password123!')
+        login_res = self.client.post(reverse('token-obtain-pair'), {'username': 'logoutuser', 'password': 'Password123!'}, format='json')
+        self.assertEqual(login_res.status_code, 200)
+        refresh_token = login_res.data['refresh']
+        access_token = login_res.data['access']
+
+        # Logout by blacklisting refresh token
+        logout_res = self.client.post(
+            reverse('auth-logout'),
+            {'refresh': refresh_token},
+            HTTP_AUTHORIZATION=f'Bearer {access_token}',
+            format='json'
+        )
+        self.assertEqual(logout_res.status_code, 200)
+
+        # Attempting to refresh using blacklisted token must fail with 401
+        refresh_res = self.client.post(reverse('token-refresh'), {'refresh': refresh_token}, format='json')
+        self.assertEqual(refresh_res.status_code, 401)
+
 
 class V2AdvancedFeaturesTests(TestCase):
     def setUp(self):
@@ -623,12 +693,7 @@ class V2AdvancedFeaturesTests(TestCase):
             email='alice@example.com',
             password='Password123!'
         )
-        login_res = self.client.post(
-            reverse('token-obtain-pair'),
-            {'username': 'creator_alice', 'password': 'Password123!'},
-            format='json'
-        )
-        self.token = login_res.data['access']
+        self.token = str(RefreshToken.for_user(self.user).access_token)
 
         # Create two test videos
         self.v1 = Video.objects.create(
@@ -661,7 +726,7 @@ class V2AdvancedFeaturesTests(TestCase):
 
         self.job2 = AnalysisJob.objects.create(
             video=self.v2,
-            user=None,
+            owner=self.user,
             status=AnalysisJob.STATUS_DONE
         )
         self.report2 = Report.objects.create(
@@ -679,8 +744,7 @@ class V2AdvancedFeaturesTests(TestCase):
         url = reverse('analyses-my')
         res = self.client.get(url, HTTP_AUTHORIZATION=f'Bearer {self.token}')
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(len(res.data), 1)
-        self.assertEqual(res.data[0]['id'], self.job1.id)
+        self.assertEqual(len(res.data), 2)
 
     def test_my_analyses_unauthenticated(self):
         url = reverse('analyses-my')
@@ -689,7 +753,7 @@ class V2AdvancedFeaturesTests(TestCase):
 
     def test_compare_videos_endpoint(self):
         url = reverse('analyses-compare')
-        res = self.client.get(f"{url}?job1={self.job1.id}&job2={self.job2.id}")
+        res = self.client.get(f"{url}?job1={self.job1.id}&job2={self.job2.id}", HTTP_AUTHORIZATION=f'Bearer {self.token}')
         self.assertEqual(res.status_code, 200)
         self.assertIn("video1", res.data)
         self.assertIn("video2", res.data)
@@ -698,7 +762,7 @@ class V2AdvancedFeaturesTests(TestCase):
 
     def test_compare_videos_missing_param_fails(self):
         url = reverse('analyses-compare')
-        res = self.client.get(f"{url}?job1={self.job1.id}")
+        res = self.client.get(f"{url}?job1={self.job1.id}", HTTP_AUTHORIZATION=f'Bearer {self.token}')
         self.assertEqual(res.status_code, 400)
         self.assertIn("error", res.data)
 
@@ -711,7 +775,7 @@ class V2AdvancedFeaturesTests(TestCase):
             needs_response=True
         )
         url = reverse('comment-draft-reply', kwargs={'comment_id': comment.id})
-        res = self.client.post(url)
+        res = self.client.post(url, HTTP_AUTHORIZATION=f'Bearer {self.token}')
         self.assertEqual(res.status_code, 200)
         self.assertIn("draft_reply", res.data)
         self.assertTrue(len(res.data["draft_reply"]) > 10)
@@ -729,5 +793,313 @@ class V2AdvancedFeaturesTests(TestCase):
         res_neg = analyze_sentiment("bilkul bakwas aur bekar video time waste scam")
         self.assertEqual(res_neg["label"], "negative")
         self.assertLess(res_neg["compound"], -0.3)
+
+
+class AuthorizationAndThrottlingTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.client = APIClient()
+        self.user_a = User.objects.create_user(username='user_a', password='Password123!')
+        self.user_b = User.objects.create_user(username='user_b', password='Password123!')
+        self.staff_user = User.objects.create_user(username='admin_staff', password='Password123!', is_staff=True)
+
+        self.video = Video.objects.create(
+            youtube_video_id="auth_test_vid",
+            title="Authorization Test Video"
+        )
+        self.comment = Comment.objects.create(
+            video=self.video,
+            comment_id="c_auth_1",
+            author="User B Viewer",
+            text="Comment on user B's video"
+        )
+        # Job owned by User B
+        self.job_b = AnalysisJob.objects.create(
+            video=self.video,
+            owner=self.user_b,
+            status=AnalysisJob.STATUS_DONE
+        )
+        self.report_b = Report.objects.create(
+            job=self.job_b,
+            sentiment_summary={"positive_percentage": 90.0}
+        )
+
+    def test_anonymous_requests_get_401(self):
+        # Anonymous cannot trigger analysis
+        res_analyze = self.client.post('/api/videos/analyze/', {'url': 'auth_test_vid'})
+        self.assertEqual(res_analyze.status_code, 401)
+
+        # Anonymous cannot poll job status
+        res_status = self.client.get(f'/api/jobs/{self.job_b.id}/status/')
+        self.assertEqual(res_status.status_code, 401)
+
+        # Anonymous cannot view report detail
+        res_report = self.client.get(f'/api/reports/{self.job_b.id}/')
+        self.assertEqual(res_report.status_code, 401)
+
+        # Anonymous cannot export report
+        res_export = self.client.get(f'/api/reports/{self.job_b.id}/export/?format=csv')
+        self.assertEqual(res_export.status_code, 401)
+
+        # Anonymous cannot view comments
+        res_comments = self.client.get(f'/api/videos/{self.video.youtube_video_id}/comments/')
+        self.assertEqual(res_comments.status_code, 401)
+
+    def test_user_a_gets_404_on_user_b_resources(self):
+        # Authenticate as User A
+        self.client.force_authenticate(user=self.user_a)
+
+        # User A cannot probe User B's job status -> 404 (not 403)
+        res_status = self.client.get(f'/api/jobs/{self.job_b.id}/status/')
+        self.assertEqual(res_status.status_code, 404)
+
+        # User A cannot probe User B's report -> 404
+        res_report = self.client.get(f'/api/reports/{self.job_b.id}/')
+        self.assertEqual(res_report.status_code, 404)
+
+        # User A cannot probe User B's export -> 404
+        res_export = self.client.get(f'/api/reports/{self.job_b.id}/export/?format=csv')
+        self.assertEqual(res_export.status_code, 404)
+
+        # User A cannot view comments for video without owning an analysis job for it -> 404
+        res_comments = self.client.get(f'/api/videos/{self.video.youtube_video_id}/comments/')
+        self.assertEqual(res_comments.status_code, 404)
+
+    def test_staff_user_can_access_all_resources(self):
+        # Authenticate as staff
+        self.client.force_authenticate(user=self.staff_user)
+
+        res_status = self.client.get(f'/api/jobs/{self.job_b.id}/status/')
+        self.assertEqual(res_status.status_code, 200)
+
+        res_report = self.client.get(f'/api/reports/{self.job_b.id}/')
+        self.assertEqual(res_report.status_code, 200)
+
+        res_export = self.client.get(f'/api/reports/{self.job_b.id}/export/?format=csv')
+        self.assertEqual(res_export.status_code, 200)
+
+        res_comments = self.client.get(f'/api/videos/{self.video.youtube_video_id}/comments/')
+        self.assertEqual(res_comments.status_code, 200)
+
+    def test_analyze_rate_limiting_throttle_returns_429(self):
+        self.client.force_authenticate(user=self.user_a)
+        # Limit on /api/videos/analyze/ is 10/hour
+        # Make 10 requests successfully, 11th should return 429
+        for i in range(10):
+            res = self.client.post('/api/videos/analyze/', {'url': f'https://www.youtube.com/watch?v=mockvid{i:05d}', 'max_comments': 10})
+            self.assertIn(res.status_code, [200, 202])
+
+        # 11th request triggers throttle
+        throttled_res = self.client.post('/api/videos/analyze/', {'url': 'https://www.youtube.com/watch?v=mockvid99999', 'max_comments': 10})
+        self.assertEqual(throttled_res.status_code, 429)
+
+    def tearDown(self):
+        from django.core.cache import cache
+        cache.clear()
+        super().tearDown()
+
+
+class FullDepthCommentAnalysisTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.client = APIClient()
+        self.user = User.objects.create_user(username='depth_user', password='Password123!')
+        self.client.force_authenticate(user=self.user)
+        self.video = Video.objects.create(
+            youtube_video_id="depth_test_vid",
+            title="Full Depth Test Video"
+        )
+        self.job = AnalysisJob.objects.create(
+            video=self.video,
+            owner=self.user,
+            status=AnalysisJob.STATUS_RUNNING,
+            stage='sentiment',
+            progress_percent=55,
+            fetched_count=450,
+            total_estimate=1000
+        )
+
+    def test_job_status_includes_progress_fields(self):
+        url = reverse('job-status', kwargs={'id': self.job.id})
+        res = self.client.get(url)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['stage'], 'sentiment')
+        self.assertEqual(res.data['progress_percent'], 55)
+        self.assertEqual(res.data['fetched_count'], 450)
+        self.assertEqual(res.data['total_estimate'], 1000)
+
+    @patch('analyzer.services.youtube.YouTubeService.fetch_video_details')
+    def test_video_preview_endpoint_returns_estimates(self, mock_details):
+        mock_details.return_value = {
+            'youtube_video_id': 'depth_test_vid',
+            'title': 'Test Video Title',
+            'channel': 'Test Channel',
+            'thumbnail_url': 'https://example.com/thumb.jpg',
+            'comment_count': 3450,
+            'view_count': 100000,
+            'like_count': 5000,
+        }
+        res = self.client.get(reverse('video-preview'), {'url': 'https://www.youtube.com/watch?v=depth_test_vid'})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['comment_count'], 3450)
+        # (3450 + 99) // 100 + 1 = 36 units
+        self.assertEqual(res.data['estimated_quota_units'], 36)
+        self.assertEqual(res.data['hard_cap'], 20000)
+
+    def test_comment_bulk_create_unique_constraint(self):
+        c1 = Comment(video=self.video, comment_id="c_uniq_1", youtube_comment_id="c_uniq_1", text="First")
+        c2 = Comment(video=self.video, comment_id="c_uniq_1", youtube_comment_id="c_uniq_1", text="Duplicate")
+        Comment.objects.bulk_create([c1, c2], batch_size=1000, ignore_conflicts=True)
+        # Only 1 row should be persisted
+        self.assertEqual(Comment.objects.filter(video=self.video, comment_id="c_uniq_1").count(), 1)
+
+
+class Step5VideoComparisonTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.client = APIClient()
+        self.user_a = User.objects.create_user(username='comp_user_a', password='Password123!')
+        self.user_b = User.objects.create_user(username='comp_user_b', password='Password123!')
+        self.client.force_authenticate(user=self.user_a)
+
+        self.v_a = Video.objects.create(youtube_video_id="vid_step5_a", title="Python Deep Dive")
+        self.v_b = Video.objects.create(youtube_video_id="vid_step5_b", title="JavaScript Essentials")
+
+        self.job_a = AnalysisJob.objects.create(
+            video=self.v_a,
+            owner=self.user_a,
+            status=AnalysisJob.STATUS_DONE
+        )
+        self.job_b = AnalysisJob.objects.create(
+            video=self.v_b,
+            owner=self.user_a,
+            status=AnalysisJob.STATUS_DONE
+        )
+        self.job_other = AnalysisJob.objects.create(
+            video=self.v_b,
+            owner=self.user_b,
+            status=AnalysisJob.STATUS_DONE
+        )
+
+        self.rep_a = Report.objects.create(
+            job=self.job_a,
+            sentiment_summary={
+                'total': 100,
+                'total_raw': 110,
+                'positive_percentage': 80.0,
+                'neutral_percentage': 15.0,
+                'negative_percentage': 5.0,
+                'average_compound': 0.60,
+                'spam_filtered': 10
+            },
+            weighted_compound=0.75,
+            top_keywords=[
+                {'keyword': 'python', 'count': 10},
+                {'keyword': 'tutorial', 'count': 8},
+                {'keyword': 'code', 'count': 6},
+                {'keyword': 'fast', 'count': 4}
+            ],
+            top_requests=[{'request': 'make part 2'}],
+        )
+
+        self.rep_b = Report.objects.create(
+            job=self.job_b,
+            sentiment_summary={
+                'total': 200,
+                'total_raw': 210,
+                'positive_percentage': 60.0,
+                'neutral_percentage': 30.0,
+                'negative_percentage': 10.0,
+                'average_compound': 0.40,
+                'spam_filtered': 10
+            },
+            weighted_compound=0.45,
+            top_keywords=[
+                {'keyword': 'javascript', 'count': 12},
+                {'keyword': 'tutorial', 'count': 7},
+                {'keyword': 'code', 'count': 5},
+                {'keyword': 'web', 'count': 3}
+            ],
+            top_requests=[],
+        )
+
+        self.rep_other = Report.objects.create(
+            job=self.job_other,
+            sentiment_summary={'positive_percentage': 50.0}
+        )
+
+    def test_get_jobs_list_paginated_for_current_user(self):
+        res = self.client.get(reverse('jobs-list'))
+        self.assertEqual(res.status_code, 200)
+        results = res.data.get('results', res.data)
+        # Should contain job_a and job_b, but NOT job_other
+        job_ids = [j['job_id'] for j in results]
+        self.assertIn(self.job_a.id, job_ids)
+        self.assertIn(self.job_b.id, job_ids)
+        self.assertNotIn(self.job_other.id, job_ids)
+
+    def test_compare_videos_permission_blocks_other_user_job(self):
+        # User A trying to compare job_a with user B's job_other -> 404
+        res = self.client.get(reverse('compare-videos'), {'a': self.job_a.id, 'b': self.job_other.id})
+        self.assertEqual(res.status_code, 404)
+
+    def test_compare_videos_identical_ids_fails(self):
+        res = self.client.get(reverse('compare-videos'), {'a': self.job_a.id, 'b': self.job_a.id})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('Cannot compare a video with itself', res.data['error'])
+
+    def test_compare_videos_uncompleted_job_fails(self):
+        uncompleted_job = AnalysisJob.objects.create(
+            video=self.v_a,
+            owner=self.user_a,
+            status=AnalysisJob.STATUS_RUNNING
+        )
+        res = self.client.get(reverse('compare-videos'), {'a': self.job_a.id, 'b': uncompleted_job.id})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('not completed', res.data['error'])
+
+    def test_compare_videos_deltas_and_jaccard_math(self):
+        res = self.client.get(reverse('compare-videos'), {'a': self.job_a.id, 'b': self.job_b.id})
+        self.assertEqual(res.status_code, 200)
+
+        deltas = res.data['deltas']
+        # Positivity: 80.0 - 60.0 = +20.0
+        self.assertEqual(deltas['positive_percentage'], 20.0)
+        # Negative: 5.0 - 10.0 = -5.0
+        self.assertEqual(deltas['negative_percentage'], -5.0)
+        # Average compound: 0.60 - 0.40 = 0.20
+        self.assertAlmostEqual(deltas['average_compound'], 0.20, places=2)
+        # Weighted compound: 0.75 - 0.45 = 0.30
+        self.assertAlmostEqual(deltas['weighted_compound'], 0.30, places=2)
+        # Comments analyzed: 100 - 200 = -100
+        self.assertEqual(deltas['comments_analyzed'], -100)
+        # Requests count: 1 - 0 = 1
+        self.assertEqual(deltas['viewer_requests_count'], 1)
+
+        # Keyword overlap:
+        # A keywords: ['python', 'tutorial', 'code', 'fast'] -> 4 items
+        # B keywords: ['javascript', 'tutorial', 'code', 'web'] -> 4 items
+        # Intersection: ['tutorial', 'code'] -> 2 items
+        # Union: ['python', 'tutorial', 'code', 'fast', 'javascript', 'web'] -> 6 items
+        # Jaccard = 2 / 6 = 0.3333
+        self.assertEqual(sorted(res.data['shared_keywords']), ['code', 'tutorial'])
+        self.assertAlmostEqual(res.data['jaccard_similarity'], 0.3333, places=2)
+
+    def test_compare_insights_endpoint(self):
+        res = self.client.post(reverse('compare-insights'), {'a': self.job_a.id, 'b': self.job_b.id}, format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assertIn('insights', res.data)
+        self.assertEqual(len(res.data['insights']), 3)
+
+    def tearDown(self):
+        from django.core.cache import cache
+        cache.clear()
+        super().tearDown()
+
+
+
 
 

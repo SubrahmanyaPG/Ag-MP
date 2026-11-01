@@ -3,6 +3,7 @@ Django settings for core project.
 """
 
 import os
+import sys
 from datetime import timedelta
 from pathlib import Path
 import dj_database_url
@@ -20,9 +21,13 @@ SECRET_KEY = os.getenv(
     'django-insecure-youtube-sentiment-college-project-secret-key-2026'
 )
 
-DEBUG = os.getenv('DEBUG', 'True').lower() in ('true', '1', 'yes')
+DEBUG = os.getenv('DEBUG', 'False').lower() in ('true', '1', 'yes')
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1,testserver,*').split(',')
+    if host.strip()
+]
 
 # Application definition
 INSTALLED_APPS = [
@@ -35,6 +40,7 @@ INSTALLED_APPS = [
     # Third party apps
     'rest_framework',
     'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     # Local apps
     'analyzer.apps.AnalyzerConfig',
@@ -85,6 +91,15 @@ DATABASES = {
     )
 }
 
+# If running unit/integration tests and no explicit database is mandated, use SQLite for fast, isolated tests
+if 'test' in sys.argv:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'test_db.sqlite3',
+        }
+    }
+
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -123,19 +138,40 @@ REST_FRAMEWORK = {
         'rest_framework.authentication.SessionAuthentication',
         'rest_framework.authentication.BasicAuthentication',
     ),
+    'DEFAULT_PERMISSION_CLASSES': (
+        'rest_framework.permissions.IsAuthenticated',
+    ),
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '20/hour',
+        'user': '200/hour',
+        'analyze': '10/hour',
+        'auth': '10/hour',
+    },
 }
 
 # SimpleJWT configuration
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
     'ROTATE_REFRESH_TOKENS': True,
-    'BLACKLIST_AFTER_ROTATION': False,
+    'BLACKLIST_AFTER_ROTATION': True,
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
 
 # CORS settings for React Vite frontend
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = os.getenv('CORS_ALLOW_ALL_ORIGINS', 'False').lower() in ('true', '1')
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        'CORS_ALLOWED_ORIGINS',
+        'http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000'
+    ).split(',')
+    if origin.strip()
+]
 CORS_ALLOW_CREDENTIALS = True
 
 # YouTube Data API v3 key
@@ -147,6 +183,9 @@ GROQ_MODEL = os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile').strip()
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '').strip()
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '').strip()
 
+# Analysis Depth & Quota Safeguards
+ANALYSIS_HARD_CAP = int(os.getenv('ANALYSIS_HARD_CAP', '20000'))
+
 # Redis / Celery settings
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
 CELERY_BROKER_URL = REDIS_URL
@@ -157,3 +196,5 @@ CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'UTC'
 CELERY_TASK_ALWAYS_EAGER = os.getenv('CELERY_ALWAYS_EAGER', 'False').lower() in ('true', '1')
 CELERY_TASK_EAGER_PROPAGATES = True
+CELERY_TASK_SOFT_TIME_LIMIT = 1800  # 30 minutes max for large video analysis
+CELERY_TASK_TIME_LIMIT = 1900

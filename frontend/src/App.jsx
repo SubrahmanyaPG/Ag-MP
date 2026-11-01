@@ -11,16 +11,19 @@ import MyAnalysesModal from './components/MyAnalysesModal';
 import AiRecommendations from './components/AiRecommendations';
 import CommentsTable from './components/CommentsTable';
 import { ToastProvider, useToast } from './components/Toast';
-import { analyzeVideo, getJobStatus, getReport, getExportUrl } from './services/api';
+import { analyzeVideo, getJobStatus, getReport, getExportUrl, getStoredUser, getCurrentUser } from './services/api';
 import { 
   Youtube, Download, ExternalLink, RefreshCw, BarChart2, ShieldCheck, 
-  CheckCircle2, FileText, Copy, Smile, AlertTriangle, ArrowRight, Activity 
+  CheckCircle2, FileText, Copy, Smile, AlertTriangle, ArrowRight, Activity, GitCompare 
 } from 'lucide-react';
 
 function DashboardContent() {
+  const [user, setUser] = useState(() => getStoredUser());
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [viewState, setViewState] = useState('home'); // 'home' | 'analyzing' | 'dashboard'
   const [activeJobId, setActiveJobId] = useState(null);
   const [jobStatus, setJobStatus] = useState('pending');
+  const [jobDetails, setJobDetails] = useState(null);
   const [reportData, setReportData] = useState(null);
   const [error, setError] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -36,6 +39,24 @@ function DashboardContent() {
   const commentsSectionRef = useRef(null);
   const { showToast } = useToast();
 
+  // Validate or refresh user session and listen for session events
+  useEffect(() => {
+    getCurrentUser().then((currentUser) => {
+      if (currentUser) {
+        setUser(currentUser);
+      }
+    });
+
+    const handleSessionExpired = () => {
+      setUser(null);
+      setIsAuthModalOpen(true);
+      showToast("Session expired. Please sign in again to continue.", "warning", "Session Expired");
+    };
+
+    window.addEventListener('session-expired', handleSessionExpired);
+    return () => window.removeEventListener('session-expired', handleSessionExpired);
+  }, []);
+
   // Poll job status during 'analyzing' view
   useEffect(() => {
     let intervalId = null;
@@ -45,6 +66,7 @@ function DashboardContent() {
         try {
           const statusRes = await getJobStatus(activeJobId);
           setJobStatus(statusRes.status);
+          setJobDetails(statusRes);
 
           if (statusRes.status === 'done') {
             clearInterval(intervalId);
@@ -70,15 +92,22 @@ function DashboardContent() {
     };
   }, [viewState, activeJobId]);
 
-  const handleStartAnalysis = async (url, maxComments) => {
+  const handleStartAnalysis = async (url, maxComments, includeReplies = false) => {
+    if (!user) {
+      setIsAuthModalOpen(true);
+      showToast("Please sign in or create an account to run video analyses", "info");
+      return;
+    }
     setError(null);
     setIsSubmitting(true);
     try {
-      const res = await analyzeVideo(url, maxComments);
+      const res = await analyzeVideo(url, maxComments, includeReplies);
       setActiveJobId(res.job_id);
       setJobStatus('pending');
+      setJobDetails(null);
       setViewState('analyzing');
-      showToast(`Initiated analysis for ${maxComments} comments`, "info");
+      const depthLabel = maxComments === 'all' ? 'all' : maxComments;
+      showToast(`Initiated analysis for ${depthLabel} comments`, "info");
     } catch (err) {
       console.error("Analysis initiation error:", err);
       const detail = err.response?.data?.url?.[0] || err.response?.data?.message || err.message || "Failed to trigger analysis";
@@ -101,6 +130,7 @@ function DashboardContent() {
   const handleReset = () => {
     setViewState('home');
     setActiveJobId(null);
+    setJobDetails(null);
     setReportData(null);
     setError(null);
     setActiveSentimentFilter('');
@@ -146,6 +176,10 @@ function DashboardContent() {
         isDashboardActive={viewState === 'dashboard'} 
         onOpenCompare={() => setIsCompareModalOpen(true)}
         onOpenMyAnalyses={() => setIsMyAnalysesModalOpen(true)}
+        user={user}
+        setUser={setUser}
+        isAuthModalOpen={isAuthModalOpen}
+        setIsAuthModalOpen={setIsAuthModalOpen}
       />
 
       <main className="flex-1 pb-16">
@@ -162,6 +196,7 @@ function DashboardContent() {
           <JobProgress 
             jobId={activeJobId} 
             status={jobStatus} 
+            jobDetails={jobDetails}
             videoTitle={video?.title}
             onCancel={handleReset}
           />
@@ -264,11 +299,19 @@ function DashboardContent() {
                       <span>Export CSV</span>
                     </a>
                     <button
+                      onClick={() => setIsCompareModalOpen(true)}
+                      className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl font-bold text-xs bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 transition-all shadow-sm"
+                      title="Compare this video with another one side by side"
+                    >
+                      <GitCompare className="w-4 h-4 text-indigo-400" />
+                      <span>Compare Video</span>
+                    </button>
+                    <button
                       onClick={handleReset}
                       className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl font-bold text-xs bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-800 transition-all"
                     >
                       <RefreshCw className="w-3.5 h-3.5" />
-                      <span>Analyze New Video</span>
+                      <span>New Analysis</span>
                     </button>
                   </div>
                 </div>

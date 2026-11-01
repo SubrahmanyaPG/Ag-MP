@@ -1,7 +1,7 @@
 from typing import Dict, List, Any, Optional
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, MiniBatchKMeans
 from sklearn.metrics import silhouette_score
 from .preprocessor import clean_text, tokenize_and_filter
 
@@ -10,6 +10,7 @@ def _find_optimal_k_by_silhouette(tfidf_matrix, n_docs: int, min_k: int = 2, max
     """
     Selects the optimal number of clusters K using Silhouette Score analysis.
     Evaluates cluster cohesion and separation, picking the K with the highest score.
+    For large matrices (n_docs > 3000), evaluates on a representative subsample for speed.
     """
     effective_max_k = min(max_k, n_docs - 1)
     if effective_max_k < min_k:
@@ -17,14 +18,18 @@ def _find_optimal_k_by_silhouette(tfidf_matrix, n_docs: int, min_k: int = 2, max
 
     best_k = min_k
     best_score = -1.0
+    sample_size = min(2000, n_docs) if n_docs > 3000 else None
 
     for candidate_k in range(min_k, effective_max_k + 1):
         try:
-            km = KMeans(n_clusters=candidate_k, init='k-means++', max_iter=200, n_init=5, random_state=42)
+            if n_docs >= 15000:
+                km = MiniBatchKMeans(n_clusters=candidate_k, batch_size=1024, random_state=42)
+            else:
+                km = KMeans(n_clusters=candidate_k, init='k-means++', max_iter=150, n_init=3, random_state=42)
             labels = km.fit_predict(tfidf_matrix)
             # Only compute silhouette if more than one distinct cluster was assigned
             if len(set(labels)) > 1:
-                score = silhouette_score(tfidf_matrix, labels)
+                score = silhouette_score(tfidf_matrix, labels, sample_size=sample_size, random_state=42)
                 if score > best_score:
                     best_score = score
                     best_k = candidate_k
@@ -117,14 +122,22 @@ def cluster_topics(
             'sample_comments': comments[:samples_per_cluster]
         }]
 
-    # K-Means clustering
-    kmeans = KMeans(
-        n_clusters=k,
-        init='k-means++',
-        max_iter=300,
-        n_init=10,
-        random_state=42
-    )
+    # K-Means clustering: use MiniBatchKMeans for massive comment sets (>= 15,000)
+    if n_docs >= 15000:
+        kmeans = MiniBatchKMeans(
+            n_clusters=k,
+            batch_size=1024,
+            max_iter=200,
+            random_state=42
+        )
+    else:
+        kmeans = KMeans(
+            n_clusters=k,
+            init='k-means++',
+            max_iter=300,
+            n_init=10,
+            random_state=42
+        )
     kmeans.fit(tfidf_matrix)
 
     labels = kmeans.labels_

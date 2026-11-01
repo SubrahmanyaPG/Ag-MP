@@ -1,12 +1,15 @@
 import re
+import logging
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Callable
 from django.conf import settings
 from django.utils import timezone
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from analyzer.models import Video, Comment
+
+logger = logging.getLogger(__name__)
 
 
 def extract_video_id(url_or_id: str) -> str:
@@ -43,9 +46,21 @@ def extract_video_id(url_or_id: str) -> str:
     raise ValueError(f"Could not extract a valid YouTube video ID from: '{url_or_id}'")
 
 
+def _format_http_error(e: HttpError, video_id: str) -> RuntimeError:
+    err_str = str(e).lower()
+    if "commentsdisabled" in err_str:
+        return RuntimeError(f"Comments are disabled on YouTube for video '{video_id}'.")
+    elif "quotaexceeded" in err_str or "daily limit exceeded" in err_str or (hasattr(e, 'resp') and e.resp.status == 403):
+        return RuntimeError("YouTube API daily quota exceeded. Please try again later or configure an alternate API key.")
+    elif (hasattr(e, 'resp') and e.resp.status == 404) or "videonotfound" in err_str:
+        return RuntimeError(f"YouTube video '{video_id}' was not found or has been set to private.")
+    return RuntimeError(f"YouTube API Error: {e}")
+
+
 class YouTubeService:
     """
-    Service wrapper around YouTube Data API v3.
+    Service wrapper around YouTube Data API v3 supporting full-depth comment pagination,
+    reply fetching, quota estimation, and batch database storage.
     """
 
     def __init__(self, api_key: Optional[str] = None):
@@ -68,7 +83,7 @@ class YouTubeService:
             )
             response = request.execute()
         except HttpError as e:
-            raise RuntimeError(f"YouTube API Error while fetching video details: {e}")
+            raise _format_http_error(e, video_id)
 
         items = response.get('items', [])
         if not items:
@@ -79,7 +94,6 @@ class YouTubeService:
         statistics = item.get('statistics', {})
         thumbnails = snippet.get('thumbnails', {})
 
-        # Choose best available thumbnail
         thumb_url = (
             thumbnails.get('maxres', {}).get('url') or
             thumbnails.get('high', {}).get('url') or
@@ -98,20 +112,33 @@ class YouTubeService:
             'comment_count': int(statistics.get('commentCount', 0)),
         }
 
-    def fetch_comments(self, video_id: str, max_comments: int = 100) -> List[Dict]:
+    def fetch_comments(
+        self, 
+        video_id: str, 
+        max_comments: Optional[int] = 100, 
+        include_replies: bool = False,
+        progress_callback: Optional[Callable[[int, int], None]] = None
+    ) -> List[Dict]:
         """
-        Fetches top-level comments for a video using commentThreads.list.
+        Fetches top-level comments (and optionally replies) using commentThreads.list.
         Paginates until max_comments is reached or no more comments exist.
+        If max_comments is None, bounds retrieval by settings.ANALYSIS_HARD_CAP.
         """
+        hard_cap = getattr(settings, 'ANALYSIS_HARD_CAP', 20000)
+        target_limit = hard_cap if (max_comments is None or max_comments <= 0) else min(max_comments, hard_cap)
+
         comments: List[Dict] = []
         next_page_token: Optional[str] = None
+        seen_ids = set()
 
-        while len(comments) < max_comments:
-            batch_size = min(100, max_comments - len(comments))
+        part_param = "snippet,replies" if include_replies else "snippet"
+
+        while len(comments) < target_limit:
+            batch_size = min(100, target_limit - len(comments))
 
             try:
                 request = self.youtube.commentThreads().list(
-                    part="snippet",
+                    part=part_param,
                     videoId=video_id,
                     maxResults=batch_size,
                     pageToken=next_page_token,
@@ -120,42 +147,74 @@ class YouTubeService:
                 )
                 response = request.execute()
             except HttpError as e:
-                # Handle comments disabled or private video
-                if "commentsDisabled" in str(e):
-                    raise RuntimeError(f"Comments are disabled for video {video_id}.")
-                raise RuntimeError(f"YouTube API Error while fetching comments: {e}")
+                raise _format_http_error(e, video_id)
 
-            for item in response.get('items', []):
+            items = response.get('items', [])
+            if not items:
+                break
+
+            for item in items:
                 snippet = item.get('snippet', {})
                 top_comment = snippet.get('topLevelComment', {}).get('snippet', {})
-                
                 comment_id = item.get('id')
-                author = top_comment.get('authorDisplayName', 'Anonymous')
-                author_image = top_comment.get('authorProfileImageUrl', '')
-                text = top_comment.get('textDisplay') or top_comment.get('textOriginal') or ''
-                like_count = top_comment.get('likeCount', 0)
-                published_raw = top_comment.get('publishedAt')
 
-                published_at = None
-                if published_raw:
-                    try:
-                        # Parse ISO 8601 timestamp (e.g. 2026-10-26T12:00:00Z)
-                        clean_ts = published_raw.replace('Z', '+00:00')
-                        published_at = datetime.fromisoformat(clean_ts)
-                    except Exception:
-                        published_at = timezone.now()
+                if comment_id and comment_id not in seen_ids:
+                    seen_ids.add(comment_id)
+                    author = top_comment.get('authorDisplayName', 'Anonymous')
+                    author_image = top_comment.get('authorProfileImageUrl', '')
+                    text = top_comment.get('textDisplay') or top_comment.get('textOriginal') or ''
+                    like_count = top_comment.get('likeCount', 0)
+                    published_raw = top_comment.get('publishedAt')
 
-                comments.append({
-                    'comment_id': comment_id,
-                    'author': author,
-                    'author_profile_image': author_image,
-                    'text': text,
-                    'like_count': like_count,
-                    'published_at': published_at,
-                })
+                    published_at = None
+                    if published_raw:
+                        try:
+                            clean_ts = published_raw.replace('Z', '+00:00')
+                            published_at = datetime.fromisoformat(clean_ts)
+                        except Exception:
+                            published_at = timezone.now()
 
-                if len(comments) >= max_comments:
+                    comments.append({
+                        'comment_id': comment_id,
+                        'author': author,
+                        'author_profile_image': author_image,
+                        'text': text,
+                        'like_count': like_count,
+                        'published_at': published_at,
+                    })
+
+                # Process replies returned directly in the thread if include_replies is enabled
+                if include_replies and 'replies' in item and len(comments) < target_limit:
+                    for rep in item['replies'].get('comments', []):
+                        rep_id = rep.get('id')
+                        if rep_id and rep_id not in seen_ids and len(comments) < target_limit:
+                            seen_ids.add(rep_id)
+                            rep_snip = rep.get('snippet', {})
+                            rep_raw_ts = rep_snip.get('publishedAt')
+                            rep_pub = None
+                            if rep_raw_ts:
+                                try:
+                                    rep_pub = datetime.fromisoformat(rep_raw_ts.replace('Z', '+00:00'))
+                                except Exception:
+                                    rep_pub = timezone.now()
+
+                            comments.append({
+                                'comment_id': rep_id,
+                                'author': rep_snip.get('authorDisplayName', 'Anonymous'),
+                                'author_profile_image': rep_snip.get('authorProfileImageUrl', ''),
+                                'text': rep_snip.get('textDisplay') or rep_snip.get('textOriginal') or '',
+                                'like_count': rep_snip.get('likeCount', 0),
+                                'published_at': rep_pub,
+                            })
+
+                if len(comments) >= target_limit:
                     break
+
+            if progress_callback:
+                try:
+                    progress_callback(len(comments), target_limit)
+                except Exception:
+                    pass
 
             next_page_token = response.get('nextPageToken')
             if not next_page_token:
@@ -163,12 +222,19 @@ class YouTubeService:
 
         return comments
 
-    def fetch_and_store(self, video_url_or_id: str, max_comments: int = 100) -> Tuple[Video, int, int]:
+    def fetch_and_store(
+        self, 
+        video_url_or_id: str, 
+        max_comments: Optional[int] = 100, 
+        include_replies: bool = False,
+        progress_callback: Optional[Callable[[int, int], None]] = None
+    ) -> Tuple[Video, int, int]:
         """
         Full workflow:
         1. Parse video ID
         2. Fetch video metadata and update/create Video in Postgres
-        3. Fetch comments and update/create Comment records in Postgres
+        3. Fetch comments in pages up to target limit
+        4. Store comments using bulk_create(batch_size=1000, ignore_conflicts=True)
         Returns (video_instance, total_fetched_count, new_or_updated_count)
         """
         video_id = extract_video_id(video_url_or_id)
@@ -185,22 +251,56 @@ class YouTubeService:
         )
 
         # 2. Fetch comments from API
-        raw_comments = self.fetch_comments(video_id, max_comments=max_comments)
+        raw_comments = self.fetch_comments(
+            video_id, 
+            max_comments=max_comments, 
+            include_replies=include_replies,
+            progress_callback=progress_callback
+        )
 
-        # 3. Store comments in database
-        saved_count = 0
-        for c in raw_comments:
-            _, created = Comment.objects.update_or_create(
+        # 3. Store comments in database via bulk_create
+        comment_objs = [
+            Comment(
+                video=video,
                 comment_id=c['comment_id'],
-                defaults={
-                    'video': video,
-                    'author': c['author'],
-                    'author_profile_image': c['author_profile_image'],
-                    'text': c['text'],
-                    'like_count': c['like_count'],
-                    'published_at': c['published_at'],
-                }
+                youtube_comment_id=c['comment_id'],
+                author=c.get('author', 'Anonymous'),
+                author_profile_image=c.get('author_profile_image', ''),
+                text=c.get('text', ''),
+                like_count=c.get('like_count', 0),
+                published_at=c.get('published_at') or timezone.now(),
             )
-            saved_count += 1
+            for c in raw_comments
+            if c.get('comment_id')
+        ]
 
-        return video, len(raw_comments), saved_count
+        if comment_objs:
+            Comment.objects.bulk_create(comment_objs, batch_size=1000, ignore_conflicts=True)
+
+        return video, len(raw_comments), len(comment_objs)
+
+
+def fetch_video_preview(video_url_or_id: str) -> Dict:
+    """
+    Returns lightweight video metadata and quota estimation before running a full analysis.
+    """
+    video_id = extract_video_id(video_url_or_id)
+    yt = YouTubeService()
+    details = yt.fetch_video_details(video_id)
+    comment_count = details.get('comment_count', 0)
+    hard_cap = getattr(settings, 'ANALYSIS_HARD_CAP', 20000)
+
+    # 1 unit for videos.list, and ~1 unit per 100 comments fetched
+    effective_comments = min(comment_count, hard_cap)
+    estimated_units = 1 + max(1, (effective_comments + 99) // 100)
+
+    return {
+        'video_id': video_id,
+        'title': details['title'],
+        'channel': details['channel'],
+        'thumbnail_url': details['thumbnail_url'],
+        'comment_count': comment_count,
+        'effective_count': effective_comments,
+        'estimated_quota_units': estimated_units,
+        'hard_cap': hard_cap,
+    }

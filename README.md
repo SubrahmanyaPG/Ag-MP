@@ -1,4 +1,4 @@
-# Automated Audience Sentiment and Feedback Analysis Using Natural Language Processing (v2.0)
+# Automated Audience Sentiment and Feedback Analysis Using Natural Language Processing (v2.1)
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/)
 [![Django](https://img.shields.io/badge/Django-5.1-green.svg)](https://www.djangoproject.com/)
@@ -9,7 +9,7 @@
 [![Celery](https://img.shields.io/badge/Celery-5.4-37814A.svg)](https://docs.celeryq.dev/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-336791.svg)](https://www.postgresql.org/)
 [![Groq](https://img.shields.io/badge/Groq%20LLM-openai%2Fgpt--oss--120b-f55036.svg)](https://groq.com/)
-[![Tests](https://img.shields.io/badge/Tests-47%20Passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-64%20Passed-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-lightgrey.svg)](LICENSE)
 
 An enterprise-grade, end-to-end full-stack intelligence platform designed to ingest YouTube audience discussions, isolate malicious spam/bots with explainable reasons, perform multilingual Hinglish sentiment classification, track sentiment trajectory over time, compute like-weighted engagement polarity, automatically select optimal topic clusters via silhouette score analysis, detect viewer questions with 1-click AI reply drafting, and synthesize strategic content recommendations using Generative AI (Groq API).
@@ -353,23 +353,28 @@ Open `http://localhost:5173` in your browser.
 
 | Method | Endpoint | Description | Request Body / Query Params |
 |---|---|---|---|
-| `POST` | `/api/videos/analyze/` | Initiates YouTube video analysis (24h cache enabled) | `{"url": "...", "max_comments": 100, "refresh": false}` |
-| `GET` | `/api/jobs/{id}/status/` | Polls current status of analysis job | Returns `pending`, `running`, `done`, `failed` |
-| `GET` | `/api/reports/{job_id}/` | Fetches complete analysis report | Returns sentiment, timeline, aspects, emotions, topics, AI insights |
+| `POST` | `/api/videos/analyze/` | Initiates YouTube video analysis (24h cache enabled; throttled at 10/hr) | `{"url": "...", "max_comments": 100, "include_replies": false, "refresh": false}` |
+| `GET` | `/api/videos/preview/` | Preview video comment count and estimated API quota before full-depth run | `?url=https://youtube.com/watch?v=...` |
+| `GET` | `/api/jobs/` | Paginated list of completed jobs for current user (dropdown picker) | `?page=1` |
+| `GET` | `/api/jobs/{id}/status/` | Polls multi-stage execution status (`stage`, `progress_percent`, `counts`) | Returns `queued`, `fetching`, `filtering`, `sentiment`, `topics`, `insights`, `done` |
+| `GET` | `/api/compare/` | Side-by-side comparative benchmarking with deltas & Jaccard index | `?a=<job_a>&b=<job_b>` |
+| `POST` | `/api/compare/insights/` | Synthesizes 3 executive comparative takeaways via Groq LLM | `{"a": <job_a>, "b": <job_b>}` |
+| `GET` | `/api/reports/{job_id}/` | Fetches complete analysis report (strictly owned by user or staff) | Returns sentiment, timeline, aspects, emotions, topics, AI insights |
 | `GET` | `/api/reports/{job_id}/export/` | Downloads report file | `?format=pdf` (PDF report) or `?format=csv` (CSV log) |
 | `GET` | `/api/analyses/my/` | Returns analysis history for logged-in user | Header: `Authorization: Bearer <access_token>` |
-| `GET` | `/api/analyses/compare/` | Compares two completed video reports side by side | `?job1=<id1>&job2=<id2>` |
 | `POST` | `/api/comments/{id}/draft-reply/` | Generates personalized AI creator response draft | Path parameter `id` |
-| `GET` | `/api/videos/{id}/comments/` | Paginated comments with filters | `?sentiment=positive&aspect=content&needs_response=true` |
-| `POST` | `/api/auth/register/` | Registers new user & returns JWT tokens | `{"username": "...", "email": "...", "password": "..."}` |
-| `POST` | `/api/auth/token/` | Obtains JWT access & refresh tokens | `{"username": "...", "password": "..."}` |
+| `GET` | `/api/videos/{id}/comments/` | Paginated comments with filters (gated by ownership) | `?sentiment=positive&is_spam=false&search=keyword` |
+| `POST` | `/api/auth/register/` | Registers new user with Django password validation | `{"username": "...", "email": "...", "password": "..."}` |
+| `POST` | `/api/auth/token/` | Obtains JWT tokens using username OR email (throttled at 10/hr) | `{"username": "...", "password": "..."}` |
+| `POST` | `/api/auth/token/refresh/` | Rotates access token and refresh token | `{"refresh": "<token>"}` |
+| `POST` | `/api/auth/logout/` | Blacklists refresh token on logout | `{"refresh": "<token>"}` |
 | `GET` | `/api/auth/me/` | Retrieves authenticated user profile | Header: `Authorization: Bearer <access_token>` |
 
 ---
 
-## 🧪 Testing & Verification (47 Test Cases)
+## 🧪 Testing & Verification (64 Automated Test Cases)
 
-The project includes an automated test suite with **47 test cases** testing backend APIs, NLP models, Hinglish lexicon, spam explainability, PDF generation, and JWT authentication:
+The project includes an extensive automated test suite with **64 test cases** testing backend APIs, authorization isolation, SimpleJWT rotation, token blacklisting, full-depth pagination, video preview quota estimation, unique constraints, comparative delta math, Jaccard similarity, Hinglish sentiment, spam explainability, and PDF export:
 
 ```powershell
 # Run the complete test suite
@@ -378,7 +383,7 @@ python backend/manage.py test analyzer
 
 Expected output:
 ```text
-Ran 47 tests in 14.050s
+Ran 64 tests in ~35s
 OK
 ```
 
@@ -393,10 +398,6 @@ python backend/manage.py test_llm
 ```
 
 ---
-
-## 🎓 College Presentation & Evaluator Demo Guide
-
-Follow these steps for a live demonstration during project review:
 
 1. **System Launch**:
    - Start Django backend (`python backend/manage.py runserver 127.0.0.1:8000`).
@@ -439,6 +440,3 @@ Follow these steps for a live demonstration during project review:
     - Open terminal and run `python backend/manage.py test_nlp_pipeline` to show evaluators the empirical ablation metrics (Regex vs ML vs Hybrid).
 
 ---
-
-## 📄 License
-This project was developed for academic and major project review purposes under the MIT License.

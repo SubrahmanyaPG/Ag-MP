@@ -1,16 +1,40 @@
 import React, { useEffect, useState } from 'react';
-import { Loader2, CheckCircle, Clock, Sparkles, AlertCircle, RefreshCw, ArrowLeft } from 'lucide-react';
+import { Loader2, CheckCircle, Clock, Sparkles, AlertCircle, RefreshCw, ArrowLeft, Database, ShieldAlert, Heart, Tag, Lightbulb } from 'lucide-react';
 
-export default function JobProgress({ jobId, status, videoTitle, onCancel }) {
+export default function JobProgress({ jobId, status, jobDetails, videoTitle, onCancel }) {
   const steps = [
-    { title: "Querying YouTube API", desc: "Fetching authentic comments & author metadata via Google API v3" },
-    { title: "Preprocessing & Spam Shield", desc: "Filtering crypto scams, promo bots, unescaping HTML & stopword cleaning" },
-    { title: "VADER Polarity Classification", desc: "Computing valence compound scores across positive, neutral & negative bands" },
-    { title: "Topic Modeling (K-Means)", desc: "TF-IDF vectorization & unsupervised centroid keyword grouping" },
-    { title: "Synthesizing AI Insights", desc: "Groq Cloud LLM generating audience takeaways & high-CTR title ideas" },
+    { 
+      key: 'fetching',
+      icon: Database,
+      title: "Querying YouTube API", 
+      desc: "Fetching authentic comments & author metadata via Google API v3" 
+    },
+    { 
+      key: 'filtering',
+      icon: ShieldAlert,
+      title: "Preprocessing & Spam Shield", 
+      desc: "Filtering crypto scams, promo links, HTML unescaping & stopword cleaning" 
+    },
+    { 
+      key: 'sentiment',
+      icon: Heart,
+      title: "VADER & Hinglish Polarity Classification", 
+      desc: "Computing valence compound scores across positive, neutral & negative bands" 
+    },
+    { 
+      key: 'topics',
+      icon: Tag,
+      title: "Topic Modeling (K-Means)", 
+      desc: "TF-IDF vectorization & Silhouette Score centroid keyword grouping" 
+    },
+    { 
+      key: 'insights',
+      icon: Lightbulb,
+      title: "Synthesizing AI Insights", 
+      desc: "Groq Cloud LLM generating audience takeaways & high-CTR title ideas" 
+    },
   ];
 
-  const [activeStep, setActiveStep] = useState(0);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   // Timer for elapsed seconds
@@ -21,23 +45,24 @@ export default function JobProgress({ jobId, status, videoTitle, onCancel }) {
     return () => clearInterval(timer);
   }, []);
 
-  // Update active step based on status or smooth progression
-  useEffect(() => {
-    if (status === 'running') {
-      const stepTimer = setInterval(() => {
-        setActiveStep((prev) => (prev < steps.length - 1 ? prev + 1 : prev));
-      }, 1800);
-      return () => clearInterval(stepTimer);
-    } else if (status === 'done') {
-      setActiveStep(steps.length);
-    } else if (status === 'pending') {
-      setActiveStep(0);
-    }
-  }, [status]);
+  const stageOrder = {
+    'queued': 0,
+    'fetching': 0,
+    'filtering': 1,
+    'sentiment': 2,
+    'topics': 3,
+    'insights': 4,
+    'done': 5,
+  };
+
+  const activeStageKey = jobDetails?.stage || (status === 'done' ? 'done' : 'fetching');
+  const activeStep = status === 'done' ? 5 : (stageOrder[activeStageKey] ?? 0);
 
   const progressPercentage = status === 'done' 
     ? 100 
-    : Math.min(Math.round(((activeStep + 0.6) / steps.length) * 100), 95);
+    : (jobDetails?.progress_percent && jobDetails.progress_percent > 0 
+        ? jobDetails.progress_percent 
+        : Math.min(Math.round(((activeStep + 0.5) / steps.length) * 100), 95));
 
   const formatTime = (secs) => {
     const m = Math.floor(secs / 60);
@@ -62,7 +87,7 @@ export default function JobProgress({ jobId, status, videoTitle, onCancel }) {
         {videoTitle ? `"${videoTitle}"` : `Executing asynchronous NLP pipeline for Job #${jobId}...`}
       </p>
 
-      {/* Progress Bar */}
+      {/* Progress Bar & Live Counter */}
       <div className="max-w-md mx-auto mb-8">
         <div className="flex items-center justify-between text-xs font-semibold mb-2">
           <span className="text-rose-400 flex items-center gap-1.5">
@@ -77,6 +102,24 @@ export default function JobProgress({ jobId, status, videoTitle, onCancel }) {
             style={{ width: `${progressPercentage}%` }}
           />
         </div>
+
+        {/* Live fetched comment counter badge */}
+        {jobDetails?.fetched_count !== undefined && jobDetails.fetched_count > 0 && (
+          <div className="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-[11px] text-slate-300">
+            <span>Processed:</span>
+            <strong className="text-emerald-400 font-mono">
+              {jobDetails.fetched_count.toLocaleString()}
+            </strong>
+            {jobDetails.total_estimate > 0 && (
+              <>
+                <span className="text-slate-500">/</span>
+                <span className="text-slate-400 font-mono">
+                  {jobDetails.total_estimate.toLocaleString()} comments
+                </span>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Stepper Card */}
@@ -88,7 +131,7 @@ export default function JobProgress({ jobId, status, videoTitle, onCancel }) {
 
             return (
               <div
-                key={idx}
+                key={step.key}
                 className={`flex items-start gap-3.5 p-3 rounded-2xl transition-all duration-200 ${
                   isCurrent
                     ? 'bg-rose-500/10 border border-rose-500/20'
@@ -114,11 +157,18 @@ export default function JobProgress({ jobId, status, videoTitle, onCancel }) {
                 </div>
 
                 <div className="flex-1 min-w-0">
-                  <p className={`text-xs sm:text-sm font-bold ${
-                    isCurrent ? 'text-white' : isCompleted ? 'text-slate-200' : 'text-slate-400'
-                  }`}>
-                    {step.title}
-                  </p>
+                  <div className="flex items-center justify-between">
+                    <p className={`text-xs sm:text-sm font-bold ${
+                      isCurrent ? 'text-white' : isCompleted ? 'text-slate-200' : 'text-slate-400'
+                    }`}>
+                      {step.title}
+                    </p>
+                    {isCurrent && (
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded-full border border-rose-500/20">
+                        In Progress
+                      </span>
+                    )}
+                  </div>
                   <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
                     {step.desc}
                   </p>
@@ -132,6 +182,9 @@ export default function JobProgress({ jobId, status, videoTitle, onCancel }) {
         <div className="mt-6 pt-4 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
           <div className="flex items-center gap-2">
             <span>Server Worker: <strong className="text-white font-mono uppercase text-[11px]">{status}</strong></span>
+            {jobDetails?.stage && (
+              <span className="text-slate-500">&bull; Stage: <strong className="text-slate-300 font-mono">{jobDetails.stage}</strong></span>
+            )}
           </div>
 
           {onCancel && (

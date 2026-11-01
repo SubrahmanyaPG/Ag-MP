@@ -32,10 +32,16 @@ class Comment(models.Model):
     )
     comment_id = models.CharField(
         max_length=120,
-        unique=True,
         null=True,
         blank=True,
         db_index=True
+    )
+    youtube_comment_id = models.CharField(
+        max_length=120,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text='Canonical YouTube comment ID'
     )
     author = models.CharField(max_length=255, blank=True, default='')
     author_profile_image = models.URLField(max_length=500, blank=True, default='')
@@ -69,6 +75,20 @@ class Comment(models.Model):
         ordering = ['-published_at', '-created_at']
         verbose_name = 'Video Comment'
         verbose_name_plural = 'Video Comments'
+        constraints = [
+            models.UniqueConstraint(fields=['video', 'comment_id'], name='unique_video_comment_id'),
+        ]
+        indexes = [
+            models.Index(fields=['video', 'sentiment_label'], name='idx_comment_vid_sentiment'),
+            models.Index(fields=['video', 'is_spam'], name='idx_comment_vid_is_spam'),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.comment_id and not self.youtube_comment_id:
+            self.youtube_comment_id = self.comment_id
+        elif self.youtube_comment_id and not self.comment_id:
+            self.comment_id = self.youtube_comment_id
+        super().save(*args, **kwargs)
 
     def __str__(self):
         author_display = self.author or 'Anonymous'
@@ -91,12 +111,12 @@ class AnalysisJob(models.Model):
         (STATUS_FAILED, 'Failed'),
     ]
 
-    user = models.ForeignKey(
+    owner = models.ForeignKey(
         User,
         null=True,
         blank=True,
-        on_delete=models.SET_NULL,
-        related_name='analysis_jobs'
+        on_delete=models.CASCADE,
+        related_name="jobs"
     )
     video = models.ForeignKey(
         Video,
@@ -109,6 +129,23 @@ class AnalysisJob(models.Model):
         default=STATUS_PENDING,
         db_index=True
     )
+    stage = models.CharField(
+        max_length=50,
+        default='queued',
+        help_text='Current execution stage (queued, fetching, filtering, sentiment, topics, insights, done, failed)'
+    )
+    progress_percent = models.IntegerField(
+        default=0,
+        help_text='Progress percentage from 0 to 100'
+    )
+    fetched_count = models.IntegerField(
+        default=0,
+        help_text='Number of comments fetched so far'
+    )
+    total_estimate = models.IntegerField(
+        default=0,
+        help_text='Total estimated comments to process'
+    )
     error_message = models.TextField(blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
@@ -117,6 +154,19 @@ class AnalysisJob(models.Model):
         ordering = ['-created_at']
         verbose_name = 'Analysis Job'
         verbose_name_plural = 'Analysis Jobs'
+
+    def __init__(self, *args, **kwargs):
+        if 'user' in kwargs and 'owner' not in kwargs:
+            kwargs['owner'] = kwargs.pop('user')
+        super().__init__(*args, **kwargs)
+
+    @property
+    def user(self):
+        return self.owner
+
+    @user.setter
+    def user(self, val):
+        self.owner = val
 
     def __str__(self):
         return f"Job #{self.id} for {self.video.youtube_video_id} [{self.status}]"

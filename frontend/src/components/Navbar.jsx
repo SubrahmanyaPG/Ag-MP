@@ -1,28 +1,50 @@
-import React, { useState, useEffect } from 'react';
-import { Sparkles, Youtube, BarChart3, RefreshCw, User, LogOut, Lock, GitCompare, History } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  Sparkles, Youtube, BarChart3, RefreshCw, User, LogOut, Lock, 
+  GitCompare, History, ChevronDown, CheckCircle2, Shield
+} from 'lucide-react';
 import AuthModal from './AuthModal';
 import { getStoredUser, getCurrentUser, logoutUser } from '../services/api';
 import { useToast } from './Toast';
 
-export default function Navbar({ onReset, isDashboardActive, onOpenCompare, onOpenMyAnalyses }) {
-  const [user, setUser] = useState(null);
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+export default function Navbar({ 
+  onReset, 
+  isDashboardActive, 
+  onOpenCompare, 
+  onOpenMyAnalyses,
+  isAuthModalOpen,
+  setIsAuthModalOpen,
+  user,
+  setUser
+}) {
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const dropdownRef = useRef(null);
   const { showToast } = useToast();
 
+  // Close dropdown on outside click
   useEffect(() => {
-    const stored = getStoredUser();
-    if (stored) {
-      setUser(stored);
-    }
-    getCurrentUser().then((currentUser) => {
-      if (currentUser) {
-        setUser(currentUser);
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setDropdownOpen(false);
       }
-    });
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const handleLogout = () => {
-    logoutUser();
+  // Listen for user-logout event from api interceptor
+  useEffect(() => {
+    const handleLogoutEvent = () => {
+      setUser(null);
+      setDropdownOpen(false);
+    };
+    window.addEventListener('user-logout', handleLogoutEvent);
+    return () => window.removeEventListener('user-logout', handleLogoutEvent);
+  }, [setUser]);
+
+  const handleLogout = async () => {
+    setDropdownOpen(false);
+    await logoutUser();
     setUser(null);
     showToast("Signed out successfully", "info");
   };
@@ -33,7 +55,7 @@ export default function Navbar({ onReset, isDashboardActive, onOpenCompare, onOp
 
   return (
     <>
-      <header className="sticky top-0 z-40 backdrop-blur-md bg-slate-950/80 border-b border-slate-800/80">
+      <header className="sticky top-0 z-40 backdrop-blur-md bg-slate-950/85 border-b border-slate-800/80">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           {/* Logo */}
           <div 
@@ -70,7 +92,7 @@ export default function Navbar({ onReset, isDashboardActive, onOpenCompare, onOp
               <span className="hidden sm:inline">Compare Videos</span>
             </button>
 
-            {/* My Analyses Button (Active or prompt sign-in) */}
+            {/* My Analyses Button */}
             <button
               onClick={() => {
                 if (user) {
@@ -93,31 +115,84 @@ export default function Navbar({ onReset, isDashboardActive, onOpenCompare, onOp
                 className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-xl bg-rose-600/10 hover:bg-rose-600/20 text-rose-400 border border-rose-500/30 transition-all shadow-sm"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
-                <span className="hidden md:inline">Analyze New Video</span>
+                <span className="hidden md:inline">New Analysis</span>
               </button>
             )}
 
-            {/* Auth Button or User Badge */}
+            {/* Auth Dropdown or Sign In Button */}
             {user ? (
-              <div className="flex items-center gap-2">
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs font-medium text-slate-200">
-                  <div className="w-5 h-5 rounded-full bg-rose-500/20 text-rose-400 flex items-center justify-center font-bold text-[10px]">
-                    {user.username.charAt(0).toUpperCase()}
-                  </div>
-                  <span className="max-w-[90px] truncate hidden sm:inline">{user.username}</span>
-                </div>
+              <div className="relative" ref={dropdownRef}>
                 <button
-                  onClick={handleLogout}
-                  title="Sign out"
-                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                  type="button"
+                  onClick={() => setDropdownOpen(!dropdownOpen)}
+                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-xs font-medium text-slate-200 transition-all shadow-sm group"
+                  aria-expanded={dropdownOpen}
+                  aria-haspopup="true"
                 >
-                  <LogOut className="w-4 h-4" />
+                  <div className="w-6 h-6 rounded-lg bg-gradient-to-tr from-rose-600 to-amber-500 text-white flex items-center justify-center font-bold text-xs shadow-inner">
+                    {user.username?.charAt(0).toUpperCase() || 'U'}
+                  </div>
+                  <span className="max-w-[100px] truncate hidden sm:inline font-semibold">
+                    {user.username}
+                  </span>
+                  <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-200 ${dropdownOpen ? 'rotate-180' : ''}`} />
                 </button>
+
+                {/* Dropdown Menu */}
+                {dropdownOpen && (
+                  <div className="absolute right-0 mt-2 w-56 rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl shadow-rose-950/30 py-2 z-50 animate-in fade-in slide-in-from-top-2 duration-150">
+                    {/* User Info Header */}
+                    <div className="px-4 py-2.5 border-b border-slate-800">
+                      <p className="text-xs font-bold text-white truncate">
+                        {user.username}
+                      </p>
+                      <p className="text-[11px] text-slate-400 truncate mt-0.5">
+                        {user.email || 'Authenticated User'}
+                      </p>
+                    </div>
+
+                    {/* Nav Actions */}
+                    <div className="py-1">
+                      <button
+                        onClick={() => {
+                          setDropdownOpen(false);
+                          onOpenMyAnalyses();
+                        }}
+                        className="w-full flex items-center gap-2.5 px-4 py-2 text-xs text-slate-300 hover:text-white hover:bg-slate-800/80 transition-colors text-left"
+                      >
+                        <History className="w-4 h-4 text-amber-400" />
+                        <span>My Analyses</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setDropdownOpen(false);
+                          onOpenCompare();
+                        }}
+                        className="w-full flex items-center gap-2.5 px-4 py-2 text-xs text-slate-300 hover:text-white hover:bg-slate-800/80 transition-colors text-left"
+                      >
+                        <GitCompare className="w-4 h-4 text-indigo-400" />
+                        <span>Compare Videos</span>
+                      </button>
+                    </div>
+
+                    <div className="border-t border-slate-800 my-1" />
+
+                    {/* Sign out */}
+                    <button
+                      onClick={handleLogout}
+                      className="w-full flex items-center gap-2.5 px-4 py-2 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-colors text-left font-semibold"
+                    >
+                      <LogOut className="w-4 h-4" />
+                      <span>Sign Out</span>
+                    </button>
+                  </div>
+                )}
               </div>
             ) : (
               <button
                 onClick={() => setIsAuthModalOpen(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-rose-600 hover:bg-rose-500 text-white shadow-md shadow-rose-950/40 transition-all"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-gradient-to-r from-rose-600 to-amber-500 hover:from-rose-500 hover:to-amber-400 text-white shadow-md shadow-rose-950/40 transition-all"
               >
                 <Lock className="w-3.5 h-3.5" />
                 <span>Sign In</span>
