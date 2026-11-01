@@ -439,6 +439,3 @@ Follow these steps for a live demonstration during project review:
     - Open terminal and run `python backend/manage.py test_nlp_pipeline` to show evaluators the empirical ablation metrics (Regex vs ML vs Hybrid).
 
 ---
-
-## 📄 License
-This project was developed for academic and major project review purposes under the MIT License.
