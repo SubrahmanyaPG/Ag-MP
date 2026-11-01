@@ -10,7 +10,7 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-336791.svg)](https://www.postgresql.org/)
 [![Groq](https://img.shields.io/badge/Groq%20LLM-openai%2Fgpt--oss--120b-f55036.svg)](https://groq.com/)
 [![Tests](https://img.shields.io/badge/Tests-64%20Passed-brightgreen.svg)]()
-[![License](https://img.shields.io/badge/License-MIT-lightgrey.svg)](LICENSE)
+
 
 An enterprise-grade, end-to-end full-stack intelligence platform designed to ingest YouTube audience discussions, isolate malicious spam/bots with explainable reasons, perform multilingual Hinglish sentiment classification, track sentiment trajectory over time, compute like-weighted engagement polarity, automatically select optimal topic clusters via silhouette score analysis, detect viewer questions with 1-click AI reply drafting, and synthesize strategic content recommendations using Generative AI (Groq API).
 
